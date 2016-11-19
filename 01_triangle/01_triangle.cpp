@@ -22,22 +22,8 @@
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan.hpp>
 
-// Set to "true" to enable Vulkan's validation layers (see vulkandebug.cpp for details)
 #define ENABLE_VALIDATION true
-// Set to "true" to use staging buffers for uploading vertex and index data to device local memory
-// See "prepareVertices" for details on what's staging and on why to use it
 #define USE_STAGING true
-
-// Macro to check and display Vulkan return results
-#define VK_CHECK_RESULT(f)																				\
-{																										\
-	vk::Result res = (f);																					\
-	if (res != vk::Result::eSuccess)																				\
-	{																									\
-		std::cerr << "Vulkan function has returned an error: \"" << vk::to_string(res) << "\" in " << __FILE__ << " at line " << __LINE__ << std::endl; \
-		assert(res == vk::Result::eSuccess);																		\
-	}																									\
-}		
 
 namespace debug
 {
@@ -122,26 +108,6 @@ namespace debug
 }
 
 // Swapchain ===========================================================================================================================================
-
-// Macro to get a procedure address based on a vulkan instance
-#define GET_INSTANCE_PROC_ADDR(inst, entrypoint)                        \
-{                                                                       \
-	fp##entrypoint = reinterpret_cast<PFN_vk##entrypoint>(vkGetInstanceProcAddr(inst, "vk"#entrypoint)); \
-	if (fp##entrypoint == NULL)                                         \
-	{																    \
-		exit(1);                                                        \
-	}                                                                   \
-}
-
-// Macro to get a procedure address based on a vulkan device
-#define GET_DEVICE_PROC_ADDR(dev, entrypoint)                           \
-{                                                                       \
-	fp##entrypoint = reinterpret_cast<PFN_vk##entrypoint>(vkGetDeviceProcAddr(dev, "vk"#entrypoint));   \
-	if (fp##entrypoint == NULL)                                         \
-	{																    \
-		exit(1);                                                        \
-	}                                                                   \
-}
 
 class SwapChain
 {
@@ -444,13 +410,13 @@ public:
 		}
 	}
 
-	vk::Result acquireNextImage(VkSemaphore presentCompleteSemaphore, uint32_t &imageIndex)
+	void acquireNextImage(VkSemaphore presentCompleteSemaphore, uint32_t &imageIndex)
 	{
 		auto resultValue = device.acquireNextImageKHR(swapChain, UINT64_MAX, presentCompleteSemaphore, vk::Fence());
 		imageIndex = resultValue.value;
 	}
 
-	vk::Result queuePresent(vk::Queue queue, uint32_t imageIndex, vk::Semaphore waitSemaphore = VK_NULL_HANDLE)
+	void queuePresent(vk::Queue queue, uint32_t imageIndex, vk::Semaphore waitSemaphore = VK_NULL_HANDLE)
 	{
 		vk::PresentInfoKHR presentInfo;
 		presentInfo.swapchainCount = 1;
@@ -474,9 +440,6 @@ public:
 class VulkanExample
 {
 public:
-
-	bool prepared = false;
-
 	// Windows/surface
 	vk::Extent2D windowSize;
 	SwapChain *swapChain;
@@ -514,6 +477,7 @@ public:
 
 	vk::RenderPass renderPass;
 	std::vector<vk::Framebuffer> frameBuffers;
+	uint32_t currentFrameBuffer = 0;
 
 	struct
 	{
@@ -623,8 +587,16 @@ public:
 
 		prepareVertices(USE_STAGING);
 
+		createUniformBuffers();
+
 		createDescriptors();
 		createGraphicsPipeline();
+
+		createSynchronizationPrimitives();
+
+		createCommandBuffers();
+
+		renderLoop();
 	}
 
 	~VulkanExample()
@@ -970,7 +942,7 @@ public:
 	}
 
 	// Create the Vulkan synchronization primitives used in this example
-	void prepareSynchronizationPrimitives()
+	void createSynchronizationPrimitives()
 	{
 		// Semaphores (Used for correct command ordering)
 		vk::SemaphoreCreateInfo semaphoreCreateInfo;
@@ -985,50 +957,24 @@ public:
 		vk::FenceCreateInfo fenceCreateInfo;
 		// Create in signaled state so we don't wait on first render of each command buffer
 		fenceCreateInfo.flags = vk::FenceCreateFlagBits::eSignaled;
-		waitFences.resize(drawCmdBuffers.size());
+		waitFences.resize(swapChain->images.size());
 		for (auto& fence : waitFences)
 		{
 			fence = device.createFence(fenceCreateInfo);
 		}
 	}
 
-	// End the command buffer and submit it to the queue
-	// Uses a fence to ensure command buffer has finished executing before deleting it
-	void flushCommandBuffer(VkCommandBuffer commandBuffer)
-	{
-		/*
-		assert(commandBuffer != VK_NULL_HANDLE);
-
-		VK_CHECK_RESULT(vkEndCommandBuffer(commandBuffer));
-
-		VkSubmitInfo submitInfo = {};
-		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-		submitInfo.commandBufferCount = 1;
-		submitInfo.pCommandBuffers = &commandBuffer;
-
-		// Create fence to ensure that the command buffer has finished executing
-		VkFenceCreateInfo fenceCreateInfo = {};
-		fenceCreateInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-		fenceCreateInfo.flags = 0;
-		VkFence fence;
-		VK_CHECK_RESULT(vkCreateFence(device, &fenceCreateInfo, nullptr, &fence));
-
-		// Submit to the queue
-		VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &submitInfo, fence));
-		// Wait for the fence to signal that command buffer has finished executing
-		VK_CHECK_RESULT(vkWaitForFences(device, 1, &fence, VK_TRUE, DEFAULT_FENCE_TIMEOUT));
-
-		vkDestroyFence(device, fence, nullptr);
-		vkFreeCommandBuffers(device, commandBufferPool, 1, &commandBuffer);
-		*/
-	}
-
 	// Build separate command buffers for every framebuffer image
-	// Unlike in OpenGL all rendering commands are recorded once into command buffers that are then resubmitted to the queue
-	// This allows to generate work upfront and from multiple threads, one of the biggest advantages of Vulkan
-	void buildCommandBuffers()
+	void createCommandBuffers()
 	{
-		/*
+		// One command buffer for each swap chain image
+		vk::CommandBufferAllocateInfo cmdBuferAllocInfo;
+		cmdBuferAllocInfo.commandPool = commandPool;
+		cmdBuferAllocInfo.commandBufferCount = swapChain->images.size();
+		cmdBuferAllocInfo.level = vk::CommandBufferLevel::ePrimary;
+		
+		drawCmdBuffers = device.allocateCommandBuffers(cmdBuferAllocInfo);
+
 		vk::CommandBufferBeginInfo cmdBufferBeginInfo;
 
 		// Set clear values for all framebuffer attachments with loadOp set to clear
@@ -1037,102 +983,64 @@ public:
 		clearValues[0].color = vk::ClearColorValue(std::array<float, 4>{ 0.0f, 0.0f, 0.2f, 1.0f });
 		clearValues[1].depthStencil = vk::ClearDepthStencilValue(1.0f, 0.0f);
 
-		VkRenderPassBeginInfo renderPassBeginInfo = {};
-		renderPassBeginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-		renderPassBeginInfo.pNext = nullptr;
+		vk::RenderPassBeginInfo renderPassBeginInfo;
 		renderPassBeginInfo.renderPass = renderPass;
 		renderPassBeginInfo.renderArea.offset.x = 0;
 		renderPassBeginInfo.renderArea.offset.y = 0;
-		renderPassBeginInfo.renderArea.extent.width = width;
-		renderPassBeginInfo.renderArea.extent.height = height;
+		renderPassBeginInfo.renderArea.extent = windowSize;
 		renderPassBeginInfo.clearValueCount = 2;
 		renderPassBeginInfo.pClearValues = clearValues;
 	
-		for (int32_t i = 0; i < drawCmdBuffers.size(); ++i)
+		for (size_t i = 0; i < drawCmdBuffers.size(); ++i)
 		{
 			// Set target frame buffer
 			renderPassBeginInfo.framebuffer = frameBuffers[i];
 
-			VK_CHECK_RESULT(vkBeginCommandBuffer(drawCmdBuffers[i], &cmdBufInfo));
+			drawCmdBuffers[i].begin(cmdBufferBeginInfo);
+			drawCmdBuffers[i].beginRenderPass(renderPassBeginInfo, vk::SubpassContents::eInline);
 
-			// Start the first sub pass specified in our default render pass setup by the base class
-			// This will clear the color and depth attachment
-			vkCmdBeginRenderPass(drawCmdBuffers[i], &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+			vk::Viewport viewport(0.0f, 0.0f, windowSize.width, windowSize.height, 0.0f, 1.0f);
+			drawCmdBuffers[i].setViewport(0, 1, &viewport);
 
-			// Update dynamic viewport state
-			VkViewport viewport = {};
-			viewport.height = (float)height;
-			viewport.width = (float)width;
-			viewport.minDepth = (float) 0.0f;
-			viewport.maxDepth = (float) 1.0f;
-			vkCmdSetViewport(drawCmdBuffers[i], 0, 1, &viewport);
+			vk::Rect2D scissor(vk::Offset2D(0, 0), windowSize);
+			drawCmdBuffers[i].setScissor(0, 1, &scissor);
 
-			// Update dynamic scissor state
-			VkRect2D scissor = {};
-			scissor.extent.width = width;
-			scissor.extent.height = height;
-			scissor.offset.x = 0;
-			scissor.offset.y = 0;
-			vkCmdSetScissor(drawCmdBuffers[i], 0, 1, &scissor);
+			drawCmdBuffers[i].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+			drawCmdBuffers[i].bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
 
-			// Bind descriptor sets describing shader binding points
-			vkCmdBindDescriptorSets(drawCmdBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
-
-			// Bind the rendering pipeline
-			// The pipeline (state object) contains all states of the rendering pipeline, binding it will set all the states specified at pipeline creation time
-			vkCmdBindPipeline(drawCmdBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-
-			// Bind triangle vertex buffer (contains position and colors)
 			VkDeviceSize offsets[1] = { 0 };
-			vkCmdBindVertexBuffers(drawCmdBuffers[i], VERTEX_BUFFER_BIND_ID, 1, &vertices.buffer, offsets);
+			drawCmdBuffers[i].bindVertexBuffers(0, 1, &vertices.buffer, offsets);
+			drawCmdBuffers[i].bindIndexBuffer(indices.buffer, 0, vk::IndexType::eUint32);
+			drawCmdBuffers[i].drawIndexed(indices.count, 1, 0, 0, 0);
 
-			// Bind triangle index buffer
-			vkCmdBindIndexBuffer(drawCmdBuffers[i], indices.buffer, 0, VK_INDEX_TYPE_UINT32);
-
-			// Draw indexed triangle
-			vkCmdDrawIndexed(drawCmdBuffers[i], indices.count, 1, 0, 0, 1);
-
-			vkCmdEndRenderPass(drawCmdBuffers[i]);
-
-			// Ending the render pass will add an implicit barrier transitioning the frame buffer color attachment to 
-			// VK_IMAGE_LAYOUT_PRESENT_SRC_KHR for presenting it to the windowing system
-
-			VK_CHECK_RESULT(vkEndCommandBuffer(drawCmdBuffers[i]));
+			drawCmdBuffers[i].endRenderPass();
+			drawCmdBuffers[i].end();
 		}
-		*/
 	}
 
-	void draw()
+	void renderFrame()
 	{
-		/*
 		// Get next image in the swap chain (back/front buffer)
-		VK_CHECK_RESULT(swapChain.acquireNextImage(presentCompleteSemaphore, &currentBuffer));
+		swapChain->acquireNextImage(presentCompleteSemaphore, currentFrameBuffer);
 
 		// Use a fence to wait until the command buffer has finished execution before using it again
-		VK_CHECK_RESULT(vkWaitForFences(device, 1, &waitFences[currentBuffer], VK_TRUE, UINT64_MAX));
-		VK_CHECK_RESULT(vkResetFences(device, 1, &waitFences[currentBuffer]));
+		device.waitForFences(1, &waitFences[currentFrameBuffer], VK_TRUE, UINT64_MAX);
+		device.resetFences(1, &waitFences[currentFrameBuffer]);
 
-		// Pipeline stage at which the queue submission will wait (via pWaitSemaphores)
-		VkPipelineStageFlags waitStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-		// The submit info structure specifices a command buffer queue submission batch
-		VkSubmitInfo submitInfo = {};
-		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-		submitInfo.pWaitDstStageMask = &waitStageMask;									// Pointer to the list of pipeline stages that the semaphore waits will occur at
-		submitInfo.pWaitSemaphores = &presentCompleteSemaphore;							// Semaphore(s) to wait upon before the submitted command buffer starts executing
-		submitInfo.waitSemaphoreCount = 1;												// One wait semaphore																				
-		submitInfo.pSignalSemaphores = &renderCompleteSemaphore;						// Semaphore(s) to be signaled when command buffers have completed
-		submitInfo.signalSemaphoreCount = 1;											// One signal semaphore
-		submitInfo.pCommandBuffers = &drawCmdBuffers[currentBuffer];					// Command buffers(s) to execute in this batch (submission)
-		submitInfo.commandBufferCount = 1;												// One command buffer
+		vk::PipelineStageFlags waitStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
 
-		// Submit to the graphics queue passing a wait fence
-		VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &submitInfo, waitFences[currentBuffer]));
-		
-		// Present the current buffer to the swap chain
-		// Pass the semaphore signaled by the command buffer submission from the submit info as the wait semaphore for swap chain presentation
-		// This ensures that the image is not presented to the windowing system until all commands have been submitted
-		VK_CHECK_RESULT(swapChain.queuePresent(queue, currentBuffer, renderCompleteSemaphore));
-		*/
+		vk::SubmitInfo submitInfo;
+		submitInfo.pWaitDstStageMask = &waitStageMask;
+		submitInfo.pWaitSemaphores = &presentCompleteSemaphore;
+		submitInfo.waitSemaphoreCount = 1;
+		submitInfo.pSignalSemaphores = &renderCompleteSemaphore;
+		submitInfo.signalSemaphoreCount = 1;
+		submitInfo.pCommandBuffers = &drawCmdBuffers[currentFrameBuffer];
+		submitInfo.commandBufferCount = 1;
+
+		queue.submit(1, &submitInfo, waitFences[currentFrameBuffer]);
+
+		swapChain->queuePresent(queue, currentFrameBuffer, renderCompleteSemaphore);
 	}
 
 	// Prepare vertex and index buffers for an indexed triangle
@@ -1351,37 +1259,20 @@ public:
 		descriptorLayout.pBindings = layoutBindings.data();
 
 		descriptorSetLayout = device.createDescriptorSetLayout(descriptorLayout);
-	}
 
-	void setupDescriptorSet()
-	{
-		/*
-		// Allocate a new descriptor set from the global descriptor pool
-		VkDescriptorSetAllocateInfo allocInfo = {};
-		allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-		allocInfo.descriptorPool = descriptorPool;
-		allocInfo.descriptorSetCount = 1;
-		allocInfo.pSetLayouts = &descriptorSetLayout;
+		// Descriptor sets
 
-		VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet));
+		vk::DescriptorSetAllocateInfo descriptorSetAllocInfo;
+		descriptorSetAllocInfo.descriptorPool = descriptorPool;
+		descriptorSetAllocInfo.descriptorSetCount = 1;
+		descriptorSetAllocInfo.pSetLayouts = &descriptorSetLayout;
 
-		// Update the descriptor set determining the shader binding points
-		// For every binding point used in a shader there needs to be one
-		// descriptor set matching that binding point
+		descriptorSet = device.allocateDescriptorSets(descriptorSetAllocInfo)[0];
 
-		VkWriteDescriptorSet writeDescriptorSet = {};
+		std::vector<vk::WriteDescriptorSet> writeDescriptorSets;
+		writeDescriptorSets.push_back(vk::WriteDescriptorSet(descriptorSet, 0, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &uniformDataVS.descriptor));
 
-		// Binding 0 : Uniform buffer
-		writeDescriptorSet.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		writeDescriptorSet.dstSet = descriptorSet;
-		writeDescriptorSet.descriptorCount = 1;
-		writeDescriptorSet.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-		writeDescriptorSet.pBufferInfo = &uniformDataVS.descriptor;
-		// Binds this uniform buffer to binding point 0
-		writeDescriptorSet.dstBinding = 0;
-
-		vkUpdateDescriptorSets(device, 1, &writeDescriptorSet, 0, nullptr);
-		*/
+		device.updateDescriptorSets(writeDescriptorSets.size(), writeDescriptorSets.data(), 0, nullptr);
 	}
 
 	// Create the frame buffers
@@ -1650,40 +1541,25 @@ public:
 		pipeline = device.createGraphicsPipeline(pipelineCache, pipelineCreateInfo);
 	}
 
-	void prepareUniformBuffers()
+	void createUniformBuffers()
 	{
-		/*
 		// Prepare and initialize a uniform buffer block containing shader uniforms
-		// Single uniforms like in OpenGL are no longer present in Vulkan. All Shader uniforms are passed via uniform buffer blocks
-		VkMemoryRequirements memReqs;
 
 		// Vertex shader uniform buffer block
-		VkBufferCreateInfo bufferInfo = {};
-		VkMemoryAllocateInfo allocInfo = {};
-		allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-		allocInfo.pNext = nullptr;
-		allocInfo.allocationSize = 0;
-		allocInfo.memoryTypeIndex = 0;
+		vk::MemoryAllocateInfo memAlloc;
+		vk::MemoryRequirements memReqs;
 
-		bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-		bufferInfo.size = sizeof(uboVS);
-		// This buffer will be used as a uniform buffer
-		bufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+		vk::BufferCreateInfo bufferCreateInfo;
+		bufferCreateInfo.size = sizeof(uboVS);
+		bufferCreateInfo.usage = vk::BufferUsageFlagBits::eUniformBuffer;
 
 		// Create a new buffer
-		VK_CHECK_RESULT(vkCreateBuffer(device, &bufferInfo, nullptr, &uniformDataVS.buffer));
-		// Get memory requirements including size, alignment and memory type 
-		vkGetBufferMemoryRequirements(device, uniformDataVS.buffer, &memReqs);
-		allocInfo.allocationSize = memReqs.size;
-		// Get the memory type index that supports host visibile memory access
-		// Most implementations offer multiple memory types and selecting the correct one to allocate memory from is crucial
-		// We also want the buffer to be host coherent so we don't have to flush (or sync after every update.
-		// Note: This may affect performance so you might not want to do this in a real world application that updates buffers on a regular base
-		allocInfo.memoryTypeIndex = getMemoryTypeIndex(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-		// Allocate memory for the uniform buffer
-		VK_CHECK_RESULT(vkAllocateMemory(device, &allocInfo, nullptr, &(uniformDataVS.memory)));
-		// Bind memory to buffer
-		VK_CHECK_RESULT(vkBindBufferMemory(device, uniformDataVS.buffer, uniformDataVS.memory, 0));
+		uniformDataVS.buffer = device.createBuffer(bufferCreateInfo);
+		memReqs = device.getBufferMemoryRequirements(uniformDataVS.buffer);
+		memAlloc.allocationSize = memReqs.size;
+		memAlloc.memoryTypeIndex = getMemoryTypeIndex(memReqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+		uniformDataVS.memory = device.allocateMemory(memAlloc);
+		device.bindBufferMemory(uniformDataVS.buffer, uniformDataVS.memory, 0);
 		
 		// Store information in the uniform's descriptor that is used by the descriptor set
 		uniformDataVS.descriptor.buffer = uniformDataVS.buffer;
@@ -1691,12 +1567,10 @@ public:
 		uniformDataVS.descriptor.range = sizeof(uboVS);
 
 		updateUniformBuffers();
-		*/
 	}
 
 	void updateUniformBuffers()
 	{
-		/*
 		// Update matrices
 		uboVS.projectionMatrix = glm::perspective(glm::radians(60.0f), (float)windowSize.width / (float)windowSize.height, 0.1f, 256.0f);
 
@@ -1708,32 +1582,87 @@ public:
 		uboVS.modelMatrix = glm::rotate(uboVS.modelMatrix, glm::radians(rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
 
 		// Map uniform buffer and update it
-		uint8_t *pData;
-		VK_CHECK_RESULT(vkMapMemory(device, uniformDataVS.memory, 0, sizeof(uboVS), 0, (void **)&pData));
+		void *pData = device.mapMemory(uniformDataVS.memory, 0, VK_WHOLE_SIZE);
 		memcpy(pData, &uboVS, sizeof(uboVS));
-		// Unmap after data has been copied
-		// Note: Since we requested a host coherent memory type for the uniform buffer, the write is instantly visible to the GPU
-		vkUnmapMemory(device, uniformDataVS.memory);
-		*/
+		device.unmapMemory(uniformDataVS.memory);
 	}
 
-	void prepare()
+	void renderLoop()
 	{
-		prepareSynchronizationPrimitives();
-		prepareUniformBuffers();
-		setupDescriptorSet();
-		buildCommandBuffers();
-		prepared = true;
+		//destWidth = width;
+		//destHeight = height;
+#if defined(_WIN32)
+		MSG msg;
+		while (TRUE)
+		{
+			while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE))
+			{
+				TranslateMessage(&msg);
+				DispatchMessage(&msg);
+			}
+
+			if (msg.message == WM_QUIT)
+			{
+				break;
+			}
+
+			renderFrame();
+		}
+#elif defined(__ANDROID__)
+		while (1)
+		{
+			int ident;
+			int events;
+			struct android_poll_source* source;
+			bool destroy = false;
+
+			focused = true;
+
+			while ((ident = ALooper_pollAll(focused ? 0 : -1, NULL, &events, (void**)&source)) >= 0)
+			{
+				if (source != NULL)
+				{
+					source->process(androidApp, source);
+				}
+				if (androidApp->destroyRequested != 0)
+				{
+					LOGD("Android app destroy requested");
+					destroy = true;
+					break;
+				}
+			}
+
+			// App destruction requested
+			// Exit loop, example will be destroyed in application main
+			if (destroy)
+			{
+				break;
+			}
+
+			// Render frame
+			if (prepared)
+			{
+				renderFrame();
+			}
+		}
+#elif defined(__linux__)
+		xcb_flush(connection);
+		while (!quit)
+		{
+			xcb_generic_event_t *event;
+			while ((event = xcb_poll_for_event(connection)))
+			{
+				handleEvent(event);
+				free(event);
+			}
+			renderFrame();
+		}
+#endif
+		// Flush device to make sure all resources can be freed if application is about to close
+		vkDeviceWaitIdle(device);
 	}
 
-	virtual void render()
-	{
-		if (!prepared)
-			return;
-		draw();
-	}
-
-	virtual void viewChanged()
+	void viewChanged()
 	{
 		// This function is called by the base example class each time the view is changed by user input
 		updateUniformBuffers();
@@ -1756,8 +1685,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR pCmdLine, int nCmdShow)
 {
 	vulkanExample = new VulkanExample(hInstance, WndProc);
-	vulkanExample->prepare();																		
-	//vulkanExample->renderLoop();																	
 	delete(vulkanExample);																			
 	return 0;																						
 }																									
