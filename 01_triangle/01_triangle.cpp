@@ -13,6 +13,7 @@
 #include <vector>
 #include <exception>
 #include <iostream>
+#include <fstream>
 
 #define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
@@ -643,35 +644,34 @@ public:
 		return shaderModule;
 	}
 #else
-	vk::ShaderModule loadSPIRVShader(std::string fileName)
+	vk::ShaderModule loadSPIRVShader(std::string filename)
 	{
-		size_t size;
+		std::ifstream file(filename, std::ios::binary | std::ios::in | std::ios::ate);
+		
+		if (file.is_open()) {
+			size_t size = file.tellg();
+			file.seekg(0, std::ios::beg);
+			char *shaderCode = new char[size];
+			file.read(shaderCode, size);
+			if (!file) {
+				file.close();
+				throw std::runtime_error("Could not read all bytes from \"" + filename + "\"");
+			}
+			file.close();
 
-		FILE *fp = fopen(fileName.c_str(), "rb");
-		assert(fp);
+			vk::ShaderModuleCreateInfo moduleCreateInfo;
+			moduleCreateInfo.codeSize = size;
+			moduleCreateInfo.pCode = (uint32_t*)shaderCode;
 
-		fseek(fp, 0L, SEEK_END);
-		size = ftell(fp);
+			vk::ShaderModule shaderModule = device.createShaderModule(moduleCreateInfo);
 
-		fseek(fp, 0L, SEEK_SET);
+			delete[] shaderCode;
 
-		//shaderCode = malloc(size);
-		char *shaderCode = new char[size];
-		size_t retval = fread(shaderCode, size, 1, fp);
-		assert(retval == 1);
-		assert(size > 0);
-
-		fclose(fp);
-
-		vk::ShaderModuleCreateInfo moduleCreateInfo;
-		moduleCreateInfo.codeSize = size;
-		moduleCreateInfo.pCode = (uint32_t*)shaderCode;
-
-		vk::ShaderModule shaderModule = device.createShaderModule(moduleCreateInfo);
-
-		delete[] shaderCode;
-
-		return shaderModule;
+			return shaderModule;
+		}
+		else {
+			throw std::runtime_error("Could not open shader file \"" + filename + "\"");
+		}
 	}
 #endif
 
