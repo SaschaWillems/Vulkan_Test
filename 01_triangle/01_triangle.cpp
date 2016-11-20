@@ -27,9 +27,10 @@
 
 namespace debug
 {
-	PFN_vkCreateDebugReportCallbackEXT CreateDebugReportCallback = VK_NULL_HANDLE;
-	PFN_vkDestroyDebugReportCallbackEXT DestroyDebugReportCallback = VK_NULL_HANDLE;
-	PFN_vkDebugReportMessageEXT dbgBreakCallback = VK_NULL_HANDLE;
+	// Function pointers, debug is an extension, so we need to load them manually
+	PFN_vkCreateDebugReportCallbackEXT createDebugReportCallbackEXT;
+	PFN_vkDestroyDebugReportCallbackEXT destroyDebugReportCallbackEXT;
+	PFN_vkDebugReportMessageEXT debugReportMessageEXT;
 
 	VkDebugReportCallbackEXT debugReportCallback;
 
@@ -84,26 +85,22 @@ namespace debug
 
 	void setupDebugging(vk::Instance instance, vk::DebugReportFlagsEXT flags)
 	{
-		CreateDebugReportCallback = (PFN_vkCreateDebugReportCallbackEXT)vkGetInstanceProcAddr(instance, "vkCreateDebugReportCallbackEXT");
-		DestroyDebugReportCallback = (PFN_vkDestroyDebugReportCallbackEXT)vkGetInstanceProcAddr(instance, "vkDestroyDebugReportCallbackEXT");
-		dbgBreakCallback = (PFN_vkDebugReportMessageEXT)vkGetInstanceProcAddr(instance, "vkDebugReportMessageEXT");
+		createDebugReportCallbackEXT = (PFN_vkCreateDebugReportCallbackEXT)vkGetInstanceProcAddr(instance, "vkCreateDebugReportCallbackEXT");
+		destroyDebugReportCallbackEXT = (PFN_vkDestroyDebugReportCallbackEXT)vkGetInstanceProcAddr(instance, "vkDestroyDebugReportCallbackEXT");
+		debugReportMessageEXT = (PFN_vkDebugReportMessageEXT)vkGetInstanceProcAddr(instance, "vkDebugReportMessageEXT");
 
 		VkDebugReportCallbackCreateInfoEXT dbgCreateInfo = {};
 		dbgCreateInfo.sType = VK_STRUCTURE_TYPE_DEBUG_REPORT_CREATE_INFO_EXT;
 		dbgCreateInfo.pfnCallback = (PFN_vkDebugReportCallbackEXT)debugMessageCallback;
 		dbgCreateInfo.flags = flags.operator VkSubpassDescriptionFlags();
 
-		VkResult err = CreateDebugReportCallback(
-			instance,
-			&dbgCreateInfo,
-			nullptr,
-			&debugReportCallback);
+		VkResult err = createDebugReportCallbackEXT(instance, &dbgCreateInfo, nullptr, &debugReportCallback);
 		assert(!err);
 	}
 
 	void freeDebugCallback(vk::Instance instance)
 	{
-		DestroyDebugReportCallback(instance, debugReportCallback, nullptr);
+		destroyDebugReportCallbackEXT(instance, debugReportCallback, nullptr);
 	}
 }
 
@@ -198,29 +195,24 @@ public:
 		assert(surface);
 
 		// Get available queue family properties
-		uint32_t queueCount;
-		vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueCount, NULL);
-		assert(queueCount >= 1);
-
-		std::vector<VkQueueFamilyProperties> queueProps(queueCount);
-		vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueCount, queueProps.data());
+		std::vector<vk::QueueFamilyProperties> queueFamilyProperties;
+		queueFamilyProperties = physicalDevice.getQueueFamilyProperties();
 
 		// Iterate over each queue to learn whether it supports presenting:
 		// Find a queue with present support
 		// Will be used to present the swap chain images to the windowing system
-		std::vector<VkBool32> supportsPresent(queueCount);
-		for (uint32_t i = 0; i < queueCount; i++)
+		std::vector<vk::Bool32> supportsPresent(queueFamilyProperties.size());
+		for (size_t i = 0; i < queueFamilyProperties.size(); i++)
 		{
-			physicalDevice.getSurfaceSupportKHR(i, surface);
+			supportsPresent[i] = physicalDevice.getSurfaceSupportKHR(i, surface);
 		}
 
-		// Search for a graphics and a present queue in the array of queue
-		// families, try to find one that supports both
+		// Search for a graphics and a present queue in the array of queue families, try to find one that supports both
 		uint32_t graphicsQueueNodeIndex = UINT32_MAX;
 		uint32_t presentQueueNodeIndex = UINT32_MAX;
-		for (uint32_t i = 0; i < queueCount; i++)
+		for (size_t i = 0; i < queueFamilyProperties.size(); i++)
 		{
-			if ((queueProps[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0)
+			if (queueFamilyProperties[i].queueFlags & vk::QueueFlagBits::eGraphics)
 			{
 				if (graphicsQueueNodeIndex == UINT32_MAX)
 				{
@@ -237,9 +229,8 @@ public:
 		}
 		if (presentQueueNodeIndex == UINT32_MAX)
 		{
-			// If there's no queue that supports both present and graphics
-			// try to find a separate present queue
-			for (uint32_t i = 0; i < queueCount; ++i)
+			// If there's no queue that supports both present and graphics try to find a separate present queue
+			for (size_t i = 0; i < queueFamilyProperties.size(); i++)
 			{
 				if (supportsPresent[i] == VK_TRUE)
 				{
@@ -534,6 +525,8 @@ public:
 	vk::PipelineCache pipelineCache;
 	vk::Pipeline pipeline;
 
+	std::vector<vk::ShaderModule> shaderModules;
+
 	vk::DescriptorPool descriptorPool;
 	vk::DescriptorSetLayout descriptorSetLayout;
 	vk::DescriptorSet descriptorSet;
@@ -563,7 +556,7 @@ public:
 		createWindow(hinstance, wndproc);
 
 		zoom = -2.5f;
-		// title = "Vulkan Example - Basic indexed triangle";
+
 		createInstance(ENABLE_VALIDATION);
 		
 		// Get first physical device
@@ -601,11 +594,14 @@ public:
 
 	~VulkanExample()
 	{
-		/* todo 
 		// Clean up used Vulkan resources 
+
 		device.destroyPipeline(pipeline);
 		device.destroyPipelineLayout(pipelineLayout);
-		device.destroyDescriptorSetLayout(descriptorSetLayout);
+		device.destroyPipelineCache(pipelineCache);
+		for (auto& module : shaderModules) {
+			device.destroyShaderModule(module);
+		}
 
 		device.destroyBuffer(vertices.buffer);
 		device.freeMemory(vertices.memory);
@@ -619,13 +615,40 @@ public:
 		device.destroySemaphore(presentCompleteSemaphore);
 		device.destroySemaphore(renderCompleteSemaphore);
 
-		for (auto& fence : waitFences)
-		{
-			device.destroyFence(fence);
+		for (auto& fence : waitFences) { 
+			device.destroyFence(fence); 
 		}
-		*/
+
+		device.destroyDescriptorSetLayout(descriptorSetLayout);
+		device.destroyDescriptorPool(descriptorPool);
+
+		for (auto& frameBuffer : frameBuffers) { 
+			device.destroyFramebuffer(frameBuffer); 
+		}
+
+		device.destroyRenderPass(renderPass);
+		device.destroyImage(depthStencil.image);
+		device.destroyImageView(depthStencil.view);
+		device.freeMemory(depthStencil.memory);
+
+		// Destroying the command pool also releases allocated command buffers
+		device.destroyCommandPool(commandPool);
 
 		delete swapChain;
+
+		device.destroy();
+
+//		if (enableValidation)
+		{
+			debug::freeDebugCallback(instance);
+		}
+
+		instance.destroy();
+
+#if defined(__linux)
+		xcb_destroy_window(connection, window);
+		xcb_disconnect(connection);
+#endif
 	}
 
 	std::string getAssetPath()
@@ -1323,7 +1346,7 @@ public:
 		for (size_t i = 0; i < frameBuffers.size(); i++)
 		{
 			std::array<vk::ImageView, 2> attachments;										
-			attachments[0] = swapChain->buffers[i].view;									// Color attachment is the view of the swapchain image			
+			attachments[0] = swapChain->buffers[i].view;								// Color attachment is the view of the swapchain image			
 			attachments[1] = depthStencil.view;											// Depth/Stencil attachment is the same for all frame buffers			
 
 			vk::FramebufferCreateInfo frameBufferCreateInfo;
@@ -1516,11 +1539,14 @@ public:
 		// Shaders are compiled offline from e.g. GLSL using the reference glslang compiler
 		std::array<vk::PipelineShaderStageCreateInfo,2> shaderStages;
 
-		shaderStages[0].module = loadSPIRVShader(getAssetPath() + "shaders/01_triangle/triangle.vert.spv");
+		shaderModules.push_back(loadSPIRVShader(getAssetPath() + "shaders/01_triangle/triangle.vert.spv"));
+		shaderModules.push_back(loadSPIRVShader(getAssetPath() + "shaders/01_triangle/triangle.frag.spv"));
+
+		shaderStages[0].module = shaderModules[0];
 		shaderStages[0].stage = vk::ShaderStageFlagBits::eVertex;
 		shaderStages[0].pName = "main";
 
-		shaderStages[1].module = loadSPIRVShader(getAssetPath() + "shaders/01_triangle/triangle.frag.spv");
+		shaderStages[1].module = shaderModules[1];
 		shaderStages[1].stage = vk::ShaderStageFlagBits::eFragment;
 		shaderStages[1].pName = "main";
 
@@ -1680,6 +1706,15 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 	{
 	//	vulkanExample->handleMessages(hWnd, uMsg, wParam, lParam);
 	}
+
+	switch (uMsg)
+	{
+	case WM_CLOSE:
+		DestroyWindow(hWnd);
+		PostQuitMessage(0);
+		break;
+	}
+
 	return (DefWindowProc(hWnd, uMsg, wParam, lParam));
 }
 int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR pCmdLine, int nCmdShow)
