@@ -25,85 +25,6 @@
 #define ENABLE_VALIDATION true
 #define USE_STAGING true
 
-namespace debug
-{
-	// Function pointers, debug is an extension, so we need to load them manually
-	PFN_vkCreateDebugReportCallbackEXT createDebugReportCallbackEXT;
-	PFN_vkDestroyDebugReportCallbackEXT destroyDebugReportCallbackEXT;
-	PFN_vkDebugReportMessageEXT debugReportMessageEXT;
-
-	VkDebugReportCallbackEXT debugReportCallback;
-
-	VkBool32 debugMessageCallback(
-		VkDebugReportFlagsEXT flags,
-		VkDebugReportObjectTypeEXT objType,
-		uint64_t srcObject,
-		size_t location,
-		int32_t msgCode,
-		const char* pLayerPrefix,
-		const char* pMsg,
-		void* pUserData)
-	{
-		// Select prefix depending on flags passed to the callback
-		// Note that multiple flags may be set for a single validation message
-		std::string prefix("");
-
-		// Error that may result in undefined behaviour
-		if (flags & VK_DEBUG_REPORT_ERROR_BIT_EXT)
-		{
-			prefix += "ERROR:";
-		};
-		// Warnings may hint at unexpected / non-spec API usage
-		if (flags & VK_DEBUG_REPORT_WARNING_BIT_EXT)
-		{
-			prefix += "WARNING:";
-		};
-		// May indicate sub-optimal usage of the API
-		if (flags & VK_DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT)
-		{
-			prefix += "PERFORMANCE:";
-		};
-		// Informal messages that may become handy during debugging
-		if (flags & VK_DEBUG_REPORT_INFORMATION_BIT_EXT)
-		{
-			prefix += "INFO:";
-		}
-		// Diagnostic info from the Vulkan loader and layers
-		// Usually not helpful in terms of API usage, but may help to debug layer and loader problems 
-		if (flags & VK_DEBUG_REPORT_DEBUG_BIT_EXT)
-		{
-			prefix += "DEBUG:";
-		}
-
-		// Display message to default output (console if activated)
-		std::cout << prefix << " [" << pLayerPrefix << "] Code " << msgCode << " : " << pMsg << "\n";
-
-		fflush(stdout);
-
-		return VK_FALSE;
-	}
-
-	void setupDebugging(vk::Instance instance, vk::DebugReportFlagsEXT flags)
-	{
-		createDebugReportCallbackEXT = (PFN_vkCreateDebugReportCallbackEXT)vkGetInstanceProcAddr(instance, "vkCreateDebugReportCallbackEXT");
-		destroyDebugReportCallbackEXT = (PFN_vkDestroyDebugReportCallbackEXT)vkGetInstanceProcAddr(instance, "vkDestroyDebugReportCallbackEXT");
-		debugReportMessageEXT = (PFN_vkDebugReportMessageEXT)vkGetInstanceProcAddr(instance, "vkDebugReportMessageEXT");
-
-		VkDebugReportCallbackCreateInfoEXT dbgCreateInfo = {};
-		dbgCreateInfo.sType = VK_STRUCTURE_TYPE_DEBUG_REPORT_CREATE_INFO_EXT;
-		dbgCreateInfo.pfnCallback = (PFN_vkDebugReportCallbackEXT)debugMessageCallback;
-		dbgCreateInfo.flags = flags.operator VkSubpassDescriptionFlags();
-
-		VkResult err = createDebugReportCallbackEXT(instance, &dbgCreateInfo, nullptr, &debugReportCallback);
-		assert(!err);
-	}
-
-	void freeDebugCallback(vk::Instance instance)
-	{
-		destroyDebugReportCallbackEXT(instance, debugReportCallback, nullptr);
-	}
-}
-
 // Swapchain ===========================================================================================================================================
 
 class SwapChain
@@ -150,23 +71,15 @@ public:
 		//swapChain = VK_NULL_HANDLE; // todo
 	}
 
-	void createSurface(
-#ifdef _WIN32
-		void* platformHandle, void* platformWindow
-#else
-#ifdef __ANDROID__
-		ANativeWindow* window
-#else
-#ifdef _DIRECT2DISPLAY
-		uint32_t width, uint32_t height
-#else
-		xcb_connection_t* connection, xcb_window_t window
-#endif
-#endif
-#endif
-	)
-	{
 
+#if defined(_WIN32) 
+	void createSurface(void* platformHandle, void* platformWindow) 
+#elif defined(__ANDROID__) 
+	void createSurface(ANativeWindow* window)
+#elif defined(__linux__) 
+	void createSurface(xcb_connection_t* connection, xcb_window_t window)
+#endif
+	{
 		// Create the os-specific surface
 		vk::Result result;
 
@@ -426,10 +339,49 @@ public:
 #endif 
 };
 
-// Example =============================================================================================================================================
+// Tutorial class
 
-class VulkanExample
-{
+// Debug callback for validation layer messages
+VkBool32 debugMessageCallback(VkDebugReportFlagsEXT flags, VkDebugReportObjectTypeEXT objType, uint64_t srcObject, size_t location, int32_t msgCode, const char* pLayerPrefix, const char* pMsg, void* pUserData) {
+	// Select prefix depending on flags passed to the callback
+	// Note that multiple flags may be set for a single validation message
+	std::string prefix("");
+
+	// Error that may result in undefined behaviour
+	if (flags & VK_DEBUG_REPORT_ERROR_BIT_EXT)
+	{
+		prefix += "ERROR:";
+	};
+	// Warnings may hint at unexpected / non-spec API usage
+	if (flags & VK_DEBUG_REPORT_WARNING_BIT_EXT)
+	{
+		prefix += "WARNING:";
+	};
+	// May indicate sub-optimal usage of the API
+	if (flags & VK_DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT)
+	{
+		prefix += "PERFORMANCE:";
+	};
+	// Informal messages that may become handy during debugging
+	if (flags & VK_DEBUG_REPORT_INFORMATION_BIT_EXT)
+	{
+		prefix += "INFO:";
+	}
+	// Diagnostic info from the Vulkan loader and layers
+	// Usually not helpful in terms of API usage, but may help to debug layer and loader problems 
+	if (flags & VK_DEBUG_REPORT_DEBUG_BIT_EXT)
+	{
+		prefix += "DEBUG:";
+	}
+
+	std::cout << prefix << " [" << pLayerPrefix << "] Code " << msgCode << " : " << pMsg << "\n";
+
+	fflush(stdout);
+
+	return VK_FALSE;
+}
+
+class VulkanTutorial {
 public:
 	// Windows/surface
 	vk::Extent2D windowSize;
@@ -455,7 +407,6 @@ public:
 	xcb_intern_atom_reply_t *atom_wm_delete_window;
 #endif
 
-
 	// Camera
 	float zoom;
 	glm::vec3 rotation;
@@ -469,6 +420,8 @@ public:
 	vk::RenderPass renderPass;
 	std::vector<vk::Framebuffer> frameBuffers;
 	uint32_t currentFrameBuffer = 0;
+
+	VkDebugReportCallbackEXT debugReportCallback = nullptr;
 
 	struct
 	{
@@ -549,7 +502,7 @@ public:
 	// Used to check the completion of queue operations (e.g. command buffer execution)
 	std::vector<vk::Fence> waitFences;
 
-	VulkanExample(HINSTANCE hinstance, WNDPROC wndproc)
+	VulkanTutorial(HINSTANCE hinstance, WNDPROC wndproc) 
 	{
 		windowSize = { 1280, 720 };
 
@@ -592,7 +545,7 @@ public:
 		renderLoop();
 	}
 
-	~VulkanExample()
+	~VulkanTutorial()
 	{
 		// Clean up used Vulkan resources 
 
@@ -638,9 +591,9 @@ public:
 
 		device.destroy();
 
-//		if (enableValidation)
-		{
-			debug::freeDebugCallback(instance);
+		if (debugReportCallback) {
+			auto vkDestroyDebugReportCallbackEXT = (PFN_vkDestroyDebugReportCallbackEXT)vkGetInstanceProcAddr(instance, "vkDestroyDebugReportCallbackEXT");
+			vkDestroyDebugReportCallbackEXT(instance, debugReportCallback, nullptr);
 		}
 
 		instance.destroy();
@@ -738,6 +691,13 @@ public:
 		}
 		*/
 
+		// Console
+		AllocConsole();
+		AttachConsole(GetCurrentProcessId());
+		FILE *stream;
+		freopen_s(&stream, "CONOUT$", "w+", stdout);
+		SetConsoleTitle(TEXT("VULKAN_TUTORIAL"));
+
 		WNDCLASSEX wndClass;
 
 		wndClass.cbSize = sizeof(WNDCLASSEX);
@@ -829,13 +789,6 @@ public:
 		SetForegroundWindow(window);
 		SetFocus(window);
 
-		// Console
-		AllocConsole();
-		AttachConsole(GetCurrentProcessId());
-		FILE *stream;
-		freopen_s(&stream, "CONOUT$", "w+", stdout);
-		SetConsoleTitle(TEXT("VULKAN_TUTORIAL"));
-
 		return window;
 	}
 #endif
@@ -860,19 +813,15 @@ public:
 		enabledExtensions.push_back(VK_KHR_XCB_SURFACE_EXTENSION_NAME);
 #endif
 
+		if (enableValidation) {
+			enabledExtensions.push_back(VK_EXT_DEBUG_REPORT_EXTENSION_NAME);
+		}
+
 		vk::InstanceCreateInfo instanceCreateInfo;
 		instanceCreateInfo.pApplicationInfo = &appInfo;
-		if (enabledExtensions.size() > 0)
-		{
-			if (enableValidation)
-			{
-				enabledExtensions.push_back(VK_EXT_DEBUG_REPORT_EXTENSION_NAME);
-			}
-			instanceCreateInfo.enabledExtensionCount = (uint32_t)enabledExtensions.size();
-			instanceCreateInfo.ppEnabledExtensionNames = enabledExtensions.data();
-		}
-		if (enableValidation)
-		{
+		instanceCreateInfo.enabledExtensionCount = (uint32_t)enabledExtensions.size();
+		instanceCreateInfo.ppEnabledExtensionNames = enabledExtensions.data();
+		if (enableValidation) {
 			instanceCreateInfo.enabledLayerCount = 1;
 			const char *validationLayerNames[] = { "VK_LAYER_LUNARG_standard_validation" };
 			instanceCreateInfo.ppEnabledLayerNames = validationLayerNames;
@@ -880,10 +829,20 @@ public:
 
 		instance = vk::createInstance(instanceCreateInfo);
 
-		if (enableValidation)
-		{
-			debug::setupDebugging(instance, vk::DebugReportFlagBitsEXT::eError);
+		// Setup debug callback to display validation layer messages
+		if (enableValidation) {
+			auto vkCreateDebugReportCallbackEXT = (PFN_vkCreateDebugReportCallbackEXT)vkGetInstanceProcAddr(instance, "vkCreateDebugReportCallbackEXT");
+
+			if (vkCreateDebugReportCallbackEXT) {
+				vk::DebugReportCallbackCreateInfoEXT dbgCreateInfo;
+				dbgCreateInfo.pfnCallback = (PFN_vkDebugReportCallbackEXT)debugMessageCallback;
+				dbgCreateInfo.flags = vk::DebugReportFlagBitsEXT::eError | vk::DebugReportFlagBitsEXT::eWarning;
+				VkResult res = vkCreateDebugReportCallbackEXT(instance, reinterpret_cast<const VkDebugReportCallbackCreateInfoEXT*>(&dbgCreateInfo), nullptr, &debugReportCallback);
+				assert(res == VK_SUCCESS);
+			}
+
 		}
+
 	}
 
 	void createDevice(vk::PhysicalDevice physicalDevice)
@@ -1699,12 +1658,12 @@ public:
 #if defined(_WIN32)
 // Windows entry point
 #define VULKAN_EXAMPLE_MAIN()
-VulkanExample *vulkanExample;
+VulkanTutorial *vulkanTutorial;
 LRESULT CALLBACK WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
-	if (vulkanExample != NULL)
+	if (vulkanTutorial != NULL)
 	{
-	//	vulkanExample->handleMessages(hWnd, uMsg, wParam, lParam);
+	//	VulkanTutorial->handleMessages(hWnd, uMsg, wParam, lParam);
 	}
 
 	switch (uMsg)
@@ -1719,63 +1678,45 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 }
 int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR pCmdLine, int nCmdShow)
 {
-	vulkanExample = new VulkanExample(hInstance, WndProc);
-	delete(vulkanExample);																			
+	vulkanTutorial = new VulkanTutorial(hInstance, WndProc);
+	delete(vulkanTutorial);
 	return 0;																						
 }																									
 #elif defined(__ANDROID__)
 // Android entry point
 // A note on app_dummy(): This is required as the compiler may otherwise remove the main entry point of the application
 #define VULKAN_EXAMPLE_MAIN()																		
-VulkanExample *vulkanExample;																		
+vulkanTutorial *VulkanTutorial;
 void android_main(android_app* state)																
 {																									
 	app_dummy();																					
-	vulkanExample = new VulkanExample();															
-	state->userData = vulkanExample;																
-	state->onAppCmd = VulkanExample::handleAppCommand;												
-	state->onInputEvent = VulkanExample::handleAppInput;											
-	vulkanExample->androidApp = state;																
-	vulkanExample->renderLoop();																	
-	delete(vulkanExample);																			
-}
-#elif defined(_DIRECT2DISPLAY)
-// Linux entry point with direct to display wsi
-// todo: extract command line arguments
-#define VULKAN_EXAMPLE_MAIN()																		
-VulkanExample *vulkanExample;																		
-static void handleEvent()                                											
-{																									
-}																									
-int main(const int argc, const char *argv[])													    
-{																									
-	vulkanExample = new VulkanExample();															
-	vulkanExample->initSwapchain();																	
-	vulkanExample->prepare();																		
-	vulkanExample->renderLoop();																	
-	delete(vulkanExample);																			
-	return 0;																						
+	vulkanTutorial = new VulkanTutorial();
+	state->userData = VulkanTutorial;																
+	state->onAppCmd = VulkanTutorial::handleAppCommand;												
+	state->onInputEvent = VulkanTutorial::handleAppInput;											
+	vulkanTutorial->androidApp = state;
+	vulkanTutorial->renderLoop();
+	delete(vulkanTutorial);
 }
 #elif defined(__linux__)
 // Linux entry point
-// todo: extract command line arguments
 #define VULKAN_EXAMPLE_MAIN()																		
-VulkanExample *vulkanExample;																		
+vulkanTutorial *VulkanTutorial;
 static void handleEvent(const xcb_generic_event_t *event)											
 {																									
-	if (vulkanExample != NULL)																		
+	if (vulkanTutorial != NULL)
 	{																								
-		vulkanExample->handleEvent(event);															
+		vulkanTutorial->handleEvent(event);
 	}																								
 }																									
 int main(const int argc, const char *argv[])													    
 {																									
-	vulkanExample = new VulkanExample();															
-	vulkanExample->setupWindow();					 												
-	vulkanExample->initSwapchain();																	
-	vulkanExample->prepare();																		
-	vulkanExample->renderLoop();																	
-	delete(vulkanExample);																			
+	vulkanTutorial = new VulkanTutorial();
+	vulkanTutorial->setupWindow();
+	vulkanTutorial->initSwapchain();
+	vulkanTutorial->prepare();
+	vulkanTutorial->renderLoop();
+	delete(vulkanTutorial);
 	return 0;																						
 }
 #endif
