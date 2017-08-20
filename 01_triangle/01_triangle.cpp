@@ -1,7 +1,7 @@
 /*
 * Vulkan Tutorial 01 - Complete setup and triangle rendering as single file using vulkan_hpp
 *
-* Copyright (C) 2016 by Sascha Willems - www.saschawillems.de
+* Copyright (C) 2016-2017 by Sascha Willems - www.saschawillems.de
 *
 * This code is licensed under the MIT license (MIT) (http://opensource.org/licenses/MIT)
 */
@@ -41,6 +41,7 @@ public:
 		vk::ImageView view;
 	} SwapChainBuffer;
 	vk::Format colorFormat;
+	vk::Format depthFormat;
 	vk::ColorSpaceKHR colorSpace;
 	vk::SwapchainKHR swapChain;
 	std::vector<vk::Image> images;
@@ -63,13 +64,11 @@ public:
 				device.destroyImageView(buffer.view);
 			}
 		}
-		if (surface) // todo
+		if (surface)
 		{
 			device.destroySwapchainKHR(swapChain);
 			instance.destroySurfaceKHR(surface);
 		}
-		//surface = VK_NULL_HANDLE; // todo
-		//swapChain = VK_NULL_HANDLE; // todo
 	}
 
 
@@ -82,8 +81,6 @@ public:
 #endif
 	{
 		// Create the os-specific surface
-		vk::Result result;
-
 #ifdef _WIN32
 		vk::Win32SurfaceCreateInfoKHR surfaceCreateInfo;
 		surfaceCreateInfo.hinstance = (HINSTANCE)platformHandle;
@@ -187,6 +184,24 @@ public:
 			colorFormat = surfaceFormats[0].format;
 		}
 		colorSpace = surfaceFormats[0].colorSpace;
+
+		// Find a suitable depth (stencil) format that is supported by the device
+		std::vector<vk::Format> depthFormats = {
+			vk::Format::eD32SfloatS8Uint,
+			vk::Format::eD24UnormS8Uint,
+			vk::Format::eD16UnormS8Uint,
+			vk::Format::eD32Sfloat,
+			vk::Format::eD16Unorm
+		};
+
+		for (auto& format : depthFormats) {
+			vk::FormatProperties formatProps = physicalDevice.getFormatProperties(format);
+			if (formatProps.optimalTilingFeatures & vk::FormatFeatureFlagBits::eDepthStencilAttachment) {
+				depthFormat = format;
+				break;
+			}
+		}
+
 	}
 
 	void create(uint32_t *width, uint32_t *height, bool vsync = false)
@@ -512,7 +527,7 @@ public:
 		zoom = -2.5f;
 
 		createInstance(ENABLE_VALIDATION);
-		
+	
 		// Get first physical device
 		std::vector<vk::PhysicalDevice> physicalDevices = instance.enumeratePhysicalDevices();
 		assert(physicalDevices.size() > 0);
@@ -605,13 +620,45 @@ public:
 #endif
 	}
 
+	// Utility functions
+
+	/** @brief Returns the relative path to the assets (shaders, textures, etc.) */
 	std::string getAssetPath()
 	{
 #if defined(__ANDROID__)
 		return "";
 #else
-		return "./../../data/";
+		return "./../data/";
 #endif
+	}
+
+	/**
+	* Get the index of a memory type that has all the requested property bits set
+	*
+	* @param typeBits Bitmask with bits set for each memory type supported by the resource to request for (from VkMemoryRequirements)
+	* @param properties Bitmask of properties for the memory type to request
+	*
+	* @return Index of the requested memory type
+	*
+	* @throw Throws an exception if no appropriate mempory type coulc be found
+	*/
+	uint32_t getMemoryTypeIndex(uint32_t typeBits, vk::MemoryPropertyFlags properties)
+	{
+		vk::PhysicalDeviceMemoryProperties deviceMemoryProperties = physicalDevice.getMemoryProperties();
+		// Iterate over all memory types available for the device used in this example
+		for (uint32_t i = 0; i < deviceMemoryProperties.memoryTypeCount; i++)
+		{
+			if ((typeBits & 1) == 1)
+			{
+				if ((deviceMemoryProperties.memoryTypes[i].propertyFlags & properties) == properties)
+				{
+					return i;
+				}
+			}
+			typeBits >>= 1;
+		}
+
+		throw "Could not find a suitable memory type!";
 	}
 
 #if defined(__ANDROID__)
@@ -644,8 +691,19 @@ public:
 		return shaderModule;
 	}
 #else
+	/**
+	* Loads a binary SPIR-V shader file into a shader module
+	*
+	* @param filename File name of the shader file to load 
+	*
+	* @return The shader module containing the shader code
+	*
+	* @throw Throws an exception if an error occurs during file loading
+	*/
 	vk::ShaderModule loadSPIRVShader(std::string filename)
 	{
+		std::cout << "Loading SPIR-V shader \"" << filename << "\"" << std::endl;
+
 		std::ifstream file(filename, std::ios::binary | std::ios::in | std::ios::ate);
 		
 		if (file.is_open()) {
@@ -897,30 +955,6 @@ public:
 		swapChain = new SwapChain(instance, physicalDevice, device);
 		swapChain->createSurface(windowInstance, window);
 		swapChain->create(&windowSize.width, &windowSize.height);
-	}
-
-	// This function is used to request a device memory type that supports all the property flags we request (e.g. device local, host visibile)
-	// Upon success it will return the index of the memory type that fits our requestes memory properties
-	// This is necessary as implementations can offer an arbitrary number of memory types with different
-	// memory properties. 
-	// You can check http://vulkan.gpuinfo.org/ for details on different memory configurations
-	uint32_t getMemoryTypeIndex(uint32_t typeBits, vk::MemoryPropertyFlags properties)
-	{
-		vk::PhysicalDeviceMemoryProperties deviceMemoryProperties = physicalDevice.getMemoryProperties();
-		// Iterate over all memory types available for the device used in this example
-		for (uint32_t i = 0; i < deviceMemoryProperties.memoryTypeCount; i++)
-		{
-			if ((typeBits & 1) == 1)
-			{
-				if ((deviceMemoryProperties.memoryTypes[i].propertyFlags & properties) == properties)
-				{						
-					return i;
-				}
-			}
-			typeBits >>= 1;
-		}
-
-		throw "Could not find a suitable memory type!";
 	}
 
 	// Create the Vulkan synchronization primitives used in this example
@@ -1265,7 +1299,7 @@ public:
 		// Create an optimal image used as the depth stencil attachment
 		vk::ImageCreateInfo image;
 		image.imageType = vk::ImageType::e2D;
-		image.format = vk::Format::eD24UnormS8Uint;
+		image.format = swapChain->depthFormat;
 		// Use example's height and width
 		image.extent = { windowSize.width, windowSize.height, 1 };
 		image.mipLevels = 1;
@@ -1290,7 +1324,7 @@ public:
 		// This allows for multiple views of one image with differing ranges (e.g. for different layers)
 		vk::ImageViewCreateInfo depthStencilView;
 		depthStencilView.viewType = vk::ImageViewType::e2D;
-		depthStencilView.format = vk::Format::eD24UnormS8Uint;
+		depthStencilView.format = swapChain->depthFormat;
 		depthStencilView.subresourceRange = {};
 		depthStencilView.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eDepth | vk::ImageAspectFlagBits::eStencil;
 		depthStencilView.subresourceRange.baseMipLevel = 0;
@@ -1340,7 +1374,7 @@ public:
 		attachments[0].finalLayout = vk::ImageLayout::ePresentSrcKHR;					// Layout to which the attachment is transitioned when the render pass is finished
 																						// As we want to present the color buffer to the swapchain, we transition to PRESENT_KHR	
 		// Depth attachment
-		attachments[1].format = vk::Format::eD24UnormS8Uint;								
+		attachments[1].format = swapChain->depthFormat;
 		attachments[1].samples = vk::SampleCountFlagBits::e1;
 		attachments[1].loadOp = vk::AttachmentLoadOp::eClear;							// Clear depth at start of first subpass
 		attachments[1].storeOp = vk::AttachmentStoreOp::eDontCare;						// We don't need depth after render pass has finished (DONT_CARE may result in better performance)
@@ -1578,19 +1612,15 @@ public:
 		//destHeight = height;
 #if defined(_WIN32)
 		MSG msg;
-		while (TRUE)
-		{
-			while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE))
-			{
+		bool quit = false;
+		while (!quit) {
+			while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
 				TranslateMessage(&msg);
 				DispatchMessage(&msg);
+				if (msg.message == WM_QUIT) {
+					quit = true;
+				}
 			}
-
-			if (msg.message == WM_QUIT)
-			{
-				break;
-			}
-
 			renderFrame();
 		}
 #elif defined(__ANDROID__)
